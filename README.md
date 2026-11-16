@@ -6,8 +6,8 @@ Kindle Cloud Reader の本文はブラウザの DOM にテキストとして入�
 
 ## 経緯
 
-1. Eliezer Yudkowsky と Nate Soares の *If Anyone Builds It, Everyone Dies* を読もうとして、Kindle で妙に安いものを買った。届いたのは英語版で、しかも同じ題名を借りた別の短い一幕劇だった。
-2. 英語なので、ふだん Web ページの翻訳に使っているブラウザ拡張（[offline-browser-translate](https://github.com/kusanaginoturugi/offline-browser-translate) のフォーク、Local LLM Translator）を Kindle Cloud Reader で使ってみた。何も訳されなかった。ページ内検索で本文の単語を探してもヒットしないので、本文は DOM のテキストになっていない。拡張をどう直しても訳せない。
+1. Eliezer Yudkowsky と Nate Soares の *If Anyone Builds It, Everyone Dies* を読もうとした。セールの情報を見て探すと、英語版が安く出ていた。日本語版は検索に出てこなかったので、英語版と分かったうえで買った。
+2. ふだん Web ページの翻訳に使っているブラウザ拡張（[offline-browser-translate](https://github.com/kusanaginoturugi/offline-browser-translate) のフォーク、Local LLM Translator）を Kindle Cloud Reader で使ってみた。何も訳されなかった。ページ内検索で本文の単語を探してもヒットしないので、本文は DOM のテキストになっていない。拡張をどう直しても訳せない。しかも、よく見ると買ったのは、同じ題名を借りた別の短い一幕劇だった。
 3. DRM を外して EPUB にする方向には行かず、画面に見えているものをそのまま使うことにした。1 回のキー操作で 1 画面を取り込み、OCR してローカル LLM で訳し、Emacs で読む。こうしてできたのがこのスクリプト。
 4. 一幕劇で試すと、戯曲の話者名やト書きが崩れたので、段落の組み立てを直した。最初は会話モデルの Gemma 4 E4B で訳していて、1 画面 6 秒ほど、内容はつかめる程度の自然さだった。
 5. あとから、翻訳専用の PLaMo 3 Translate 0.8B（同じブラウザ拡張で使っていたモデル）にすればよかったと気づいて、既定にした。1 画面 2 秒ほどになり、時間の大半は OCR になった。
