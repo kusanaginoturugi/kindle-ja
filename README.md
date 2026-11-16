@@ -26,6 +26,12 @@ Kindle Cloud Reader の本文はブラウザの DOM にテキストとして入�
 
 訳している間にもう一度押しても、二重には動かない（通知が出るだけ）。
 
+### Emacs 以外のエディタで読む
+
+訳は普通のテキストファイル（Org 形式）に足していくだけなので、ファイルの変更を読み直せるエディタなら、Emacs でなくても読める（Vim / Neovim の `autoread`、VS Code の自動再読み込み、`tail -f` など）。
+Emacs に合わせているのは、表示用の窓を開くコマンド（kindle-ja の中の `kitty … emacs -nw`）と、原文を畳んで新しい見出しを窓の先頭に出す Emacs Lisp だけ。
+ほかのエディタで使いたいときは、この 2 か所を、自分のコーディングエージェントに頼んで書き換えてもらうとよい。
+
 ## OCR サーバー（kindle-ja-ocrd）
 
 RapidOCR（PaddleOCR の PP-OCRv6 small を onnxruntime-gpu で動かす）を、`127.0.0.1:8093` で常駐させる小さな HTTP サーバー。
