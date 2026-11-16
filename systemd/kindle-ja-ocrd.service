@@ -1,0 +1,9 @@
+[Unit]
+Description=kindle-ja OCR server (RapidOCR on GPU)
+
+[Service]
+Type=simple
+# kindle-ja が必要なときに systemctl --user start で起こす。10 分使われなければ自分で終わる（終了コード 0）
+ExecStart=%h/.local/share/kindle-ja/venv/bin/python -I %h/.local/bin/kindle-ja-ocrd
+Restart=on-failure
+RestartSec=3

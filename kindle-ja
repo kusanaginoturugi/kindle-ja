@@ -7,6 +7,7 @@
 #   訳は ~/Documents/kindle-ja/<本の名前>.org にたまる。
 #   取り込む範囲は ~/.config/kindle-ja/geometry の 1 行目（grim -g の形式）。なければ既定値。
 #   モデルは ~/.config/kindle-ja/model の 1 行目、または KINDLE_JA_LLM_MODEL。
+#   OCR は GPU の kindle-ja-ocrd（RapidOCR）を使い、動かなければ tesseract で読む。KINDLE_JA_OCR=tesseract で tesseract に固定。
 #
 #        kindle-ja --select
 #   範囲を slurp で選び直して geometry に保存する（訳はしない）。
@@ -32,6 +33,9 @@ if [ -r "$llm_model_file" ]; then
 fi
 llm_model="${KINDLE_JA_LLM_MODEL:-$llm_model_default}"
 window_class=kindle-ja
+ocr_url="${KINDLE_JA_OCR_URL:-http://127.0.0.1:8093}"
+# server（既定）なら GPU の OCR サーバーを使い、だめなら tesseract。tesseract なら最初から tesseract
+ocr_engine="${KINDLE_JA_OCR:-server}"
 
 notify() {
   notify-send -a kindle-ja -t "${2:-3000}" "kindle-ja" "$1" 2>/dev/null || :
@@ -66,17 +70,33 @@ if ! mkdir "$lock" 2>/dev/null; then
 fi
 trap 'rm -rf "$lock" "$state_dir/page.png" "$state_dir/ocr.png"' EXIT INT TERM
 
-grim -g "$geometry" "$state_dir/page.png"
-magick "$state_dir/page.png" -colorspace Gray -resize 200% "$state_dir/ocr.png"
+# GPU の OCR サーバー（kindle-ja-ocrd）に画像を渡し、段落を空行で区切って出す。
+# 動いていなければ systemd で起こして、立ち上がるまで待つ（最大 15 秒）。使えなければ何も出さない。
+ocr_server() {
+  [ "$ocr_engine" = tesseract ] && return 1
+  if ! curl -sf --max-time 1 "$ocr_url/health" >/dev/null 2>&1; then
+    systemctl --user start kindle-ja-ocrd.service >/dev/null 2>&1 || return 1
+    i=0
+    until curl -sf --max-time 1 "$ocr_url/health" >/dev/null 2>&1; do
+      i=$((i + 1))
+      [ "$i" -ge 30 ] && return 1
+      sleep 0.5
+    done
+  fi
+  curl -sf --max-time 30 --data-binary @"$state_dir/page.png" "$ocr_url/ocr" |
+    jq -er '.paragraphs | join("\n\n")'
+}
 
-# OCR して、行末ハイフンをつなぎ、行を段落にまとめる。
+# tesseract（CPU）で OCR して、行末ハイフンをつなぎ、行を段落にまとめる。OCR サーバーが使えないときの予備。
 # 段落の切れ目:
 #   - 短い行（両端揃えの段落の最終行）のあと
 #   - 空行のうち、直前が文末記号で終わっているもの（tesseract は段落の途中にも空行を入れる）
 #   - 全部大文字の行（戯曲の話者名や見出し）の前後
 # 正規表現の ” ’ は本文の約物（Kindle は曲がった引用符を使う）なので SC1112 は無視する。
 # shellcheck disable=SC1112
-source_text=$(tesseract "$state_dir/ocr.png" - -l eng 2>/dev/null | awk '
+ocr_tesseract() {
+  magick "$state_dir/page.png" -colorspace Gray -resize 200% "$state_dir/ocr.png"
+  tesseract "$state_dir/ocr.png" - -l eng 2>/dev/null | awk '
   { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); line[NR] = $0; if (length($0) > max) max = length($0) }
   function flush() { if (cur != "") { print (printed++ ? "\n" : "") cur }; cur = "" }
   END {
@@ -90,7 +110,11 @@ source_text=$(tesseract "$state_dir/ocr.png" - -l eng 2>/dev/null | awk '
       if (length(l) < max * 0.8) flush()
     }
     flush()
-  }')
+  }'
+}
+
+grim -g "$geometry" "$state_dir/page.png"
+source_text=$(ocr_server) || source_text=$(ocr_tesseract)
 
 if [ -z "$source_text" ]; then
   notify "文字が読み取れなかった"

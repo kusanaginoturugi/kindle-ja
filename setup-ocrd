@@ -1,0 +1,30 @@
+#!/bin/sh
+# kindle-ja-ocrd（GPU の OCR サーバー）の Python 環境を作る。
+#   ~/.local/share/kindle-ja/venv に RapidOCR と onnxruntime-gpu（CUDA と cuDNN のライブラリ込み、約 2.7GB）を入れ、
+#   モデル（PP-OCRv6、約 30MB）を先に取ってくる。
+# RapidOCR は CPU 版の onnxruntime を引っぱってくるので、入れたあとで外して GPU 版に入れ替える。
+set -eu
+
+venv=${KINDLE_JA_VENV:-"${XDG_DATA_HOME:-$HOME/.local/share}/kindle-ja/venv"}
+python=${PYTHON:-python3}
+
+mkdir -p -- "$(dirname -- "$venv")"
+[ -x "$venv/bin/python" ] || "$python" -m venv -- "$venv"
+"$venv/bin/pip" install -q --upgrade pip
+"$venv/bin/pip" install -q 'rapidocr==3.10.0'
+"$venv/bin/pip" uninstall -q -y onnxruntime 2>/dev/null || :
+"$venv/bin/pip" install -q 'onnxruntime-gpu[cuda,cudnn]==1.31.1'
+
+# モデルを取ってきて、GPU で動くか確かめる
+"$venv/bin/python" -I - <<'EOF'
+import onnxruntime as ort
+from rapidocr import RapidOCR
+
+RapidOCR(params={"Global.log_level": "error", "Global.use_cls": False,
+                 "EngineConfig.onnxruntime.use_cuda": True})
+providers = ort.get_available_providers()
+print("onnxruntime", ort.__version__, providers)
+if "CUDAExecutionProvider" not in providers:
+    raise SystemExit("CUDA が使えない。KINDLE_JA_OCRD_CPU=1 なら CPU で動く")
+EOF
+printf 'Installed kindle-ja-ocrd environment to %s\n' "$venv"

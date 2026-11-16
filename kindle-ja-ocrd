@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""kindle-ja 用の OCR サーバー。RapidOCR（PaddleOCR の PP-OCRv6 を onnxruntime で動かす）を GPU で常駐させる。
+
+  GET  /health  → {"status": "ok"}
+  POST /ocr     → 本文は画像（PNG など）。{"paragraphs": [...], "seconds": 0.4} を返す
+
+起動に数秒かかる（モデルの読み込みと CUDA の初期化）ので、kindle-ja から毎回起動せずに常駐させる。
+一定時間（既定 10 分）使われなければ自分で終了して VRAM を返す。systemd の kindle-ja-ocrd.service から動かす。
+
+環境変数
+  KINDLE_JA_OCRD_PORT   待ち受けるポート（既定 8093、127.0.0.1 だけ）
+  KINDLE_JA_OCRD_IDLE   使われないまま何秒たったら終了するか（既定 600、0 で終了しない）
+  KINDLE_JA_OCRD_CPU    1 にすると GPU を使わない
+"""
+import json
+import os
+import re
+import statistics
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(os.environ.get("KINDLE_JA_OCRD_PORT", "8093"))
+IDLE = float(os.environ.get("KINDLE_JA_OCRD_IDLE", "600"))
+USE_CUDA = os.environ.get("KINDLE_JA_OCRD_CPU", "") != "1"
+# Kindle の文字は 1 行の高さが 25px ほどしかなく、そのままだと ! を l と読むことがある。2 倍に拡大すると直る
+SCALE = 2.0
+
+
+def group_lines(items):
+    """(box, text) を、縦に重なるものどうしで 1 行にまとめる。box は 4 点の (x, y)。
+
+    戻り値は (top, bottom, text) を上から並べたもの。同じ行の中は左から並べる。
+    """
+    boxes = []
+    for box, text in items:
+        ys = [p[1] for p in box]
+        xs = [p[0] for p in box]
+        boxes.append((min(ys), max(ys), min(xs), text))
+    boxes.sort()
+    lines = []
+    for top, bottom, left, text in boxes:
+        if lines:
+            ltop, lbottom, parts = lines[-1]
+            overlap = min(bottom, lbottom) - max(top, ltop)
+            if overlap > 0.5 * min(bottom - top, lbottom - ltop):
+                parts.append((left, text))
+                lines[-1] = (min(top, ltop), max(bottom, lbottom), parts)
+                continue
+        lines.append((top, bottom, [(left, text)]))
+    return [(top, bottom, " ".join(t for _, t in sorted(parts))) for top, bottom, parts in lines]
+
+
+def paragraph_limit(gaps, height):
+    """段落の切れ目とみなす行間を決める。
+
+    Kindle は段落の間を、段落の中の行間より少し広く空ける（2 倍に拡大した画面で、65〜67 に対して 74〜83）。
+    行間を小さい順に並べ、初めて 6% 以上跳ねたところの中間をしきい値にする。
+    跳ねるところがなければ（1 行の段落ばかり、または段落が 1 つだけのページ）、
+    行間が行の高さの 1.45 倍より広ければ全部を段落の切れ目、狭ければ切れ目なしとする。
+    """
+    if not gaps:
+        return 0
+    ordered = sorted(gaps)
+    for small, large in zip(ordered, ordered[1:]):
+        if large >= small * 1.06:
+            return (small + large) / 2
+    return 0 if ordered[0] > height * 1.45 else float("inf")
+
+
+def paragraphs(lines):
+    """行の間隔から段落を組み立てる。
+
+    行間は行の中心どうしで測る（上端は大文字や引用符の有無で上下するため）。
+    行末のハイフンは、次の行が小文字で始まるときだけ取ってつなぐ。
+    """
+    if not lines:
+        return []
+    centers = [(top + bottom) / 2 for top, bottom, _ in lines]
+    gaps = [b - a for a, b in zip(centers, centers[1:])]
+    height = statistics.median(bottom - top for top, bottom, _ in lines)
+    limit = paragraph_limit(gaps, height)
+    result = [lines[0][2]]
+    for gap, (_, _, text) in zip(gaps, lines[1:]):
+        if gap > limit:
+            result.append(text)
+        elif re.search(r"[A-Za-z]-$", result[-1]) and re.match(r"[a-z]", text):
+            result[-1] = result[-1][:-1] + text
+        else:
+            result[-1] = result[-1] + " " + text
+    return result
+
+
+class Handler(BaseHTTPRequestHandler):
+    engine = None
+    last_used = time.monotonic()
+
+    def reply(self, status, body):
+        data = json.dumps(body, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == "/health":
+            self.reply(200, {"status": "ok"})
+        else:
+            self.reply(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path != "/ocr":
+            self.reply(404, {"error": "not found"})
+            return
+        import cv2
+        import numpy as np
+
+        Handler.last_used = time.monotonic()
+        data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            self.reply(400, {"error": "画像として読めない"})
+            return
+        start = time.perf_counter()
+        image = cv2.resize(image, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_CUBIC)
+        result = self.engine(image)
+        items = list(zip(result.boxes, result.txts)) if result.txts else []
+        body = {"paragraphs": paragraphs(group_lines(items)), "seconds": round(time.perf_counter() - start, 3)}
+        Handler.last_used = time.monotonic()
+        self.reply(200, body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+def load_engine():
+    from rapidocr import RapidOCR
+
+    engine = RapidOCR(params={
+        "Global.log_level": "error",
+        "Global.use_cls": False,  # 横書きの本文だけなので、向きの判定は省く
+        "EngineConfig.onnxruntime.use_cuda": USE_CUDA,
+        # EXHAUSTIVE（既定）は画像の大きさが変わるたびに 1 秒以上かけて探し直す。HEURISTIC で十分速い
+        "EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search": "HEURISTIC",
+    })
+    return engine
+
+
+def main():
+    Handler.engine = load_engine()
+    server = HTTPServer(("127.0.0.1", PORT), Handler)
+
+    def watch():
+        while True:
+            time.sleep(10)
+            if time.monotonic() - Handler.last_used > IDLE:
+                print(f"{IDLE:.0f} 秒使われなかったので終了する", file=sys.stderr)
+                server.shutdown()
+                return
+
+    if IDLE > 0:
+        threading.Thread(target=watch, daemon=True).start()
+    print(f"kindle-ja-ocrd: 127.0.0.1:{PORT}（{'GPU' if USE_CUDA else 'CPU'}）", file=sys.stderr)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

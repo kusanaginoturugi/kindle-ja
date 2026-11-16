@@ -11,12 +11,13 @@ Kindle Cloud Reader の本文はブラウザの DOM にテキストとして入�
 3. DRM を外して EPUB にする方向には行かず、画面に見えているものをそのまま使うことにした。1 回のキー操作で 1 画面を取り込み、OCR してローカル LLM で訳し、Emacs で読む。こうしてできたのがこのスクリプト。
 4. 一幕劇で試すと、戯曲の話者名やト書きが崩れたので、段落の組み立てを直した。最初は会話モデルの Gemma 4 E4B で訳していて、1 画面 6 秒ほど、内容はつかめる程度の自然さだった。
 5. あとから、翻訳専用の PLaMo 3 Translate 0.8B（同じブラウザ拡張で使っていたモデル）にすればよかったと気づいて、既定にした。1 画面 2 秒ほどになり、時間の大半は OCR になった。
-6. それでも本命の本は、結局日本語版を買って読むことにした。一冊を通して読むには、ローカル LLM の訳はまだ人の訳に及ばない。このスクリプトは、日本語版がない本や、とりあえず中身を知りたい本に使う。
+6. 時間の大半が OCR になったので、OCR も GPU で動かすことにした。PaddleOCR 本体と、同じ PaddleOCR のモデル（PP-OCRv6）を onnxruntime で動かす RapidOCR を比べ、環境の軽い RapidOCR を常駐させる OCR サーバー（`kindle-ja-ocrd`）にした。1 画面 1 秒ほどになった。
+7. それでも本命の本は、結局日本語版の紙の本を買った（あとで探したら日本語版があった）。話題の本なので、読み終わったら回し読みしたい。日本の Kindle の本は人に貸せないし、買っても実際は読む権利を借りているだけなのに、値段は紙の本と変わらない。それに、一冊を通して読むには、ローカル LLM の訳はまだ人の訳に及ばない。このスクリプトは、日本語版がない本や、とりあえず中身を知りたい本に使う。
 
 ## 動作
 
-1. `grim` で画面の決まった範囲を取り込み、`magick` でグレースケール・2 倍に拡大する
-2. `tesseract`（英語）で OCR し、行末のハイフンをつなぎ、行を段落にまとめる
+1. `grim` で画面の決まった範囲を取り込む
+2. OCR サーバー（`kindle-ja-ocrd`、RapidOCR を GPU で常駐）に画像を渡し、段落ごとの文字を受け取る。サーバーが動いていなければ systemd で起こす。それでも使えなければ、`magick` で 2 倍に拡大して `tesseract`（CPU）で読む
 3. llama.cpp の OpenAI 互換 API（`127.0.0.1:8080/v1/chat/completions`）に送って日本語に訳す
 4. `~/Documents/kindle-ja/<本の名前>.org` に、見出し（日時）、原文の quote ブロック、訳の順で追記する
 5. 表示用の窓（kitty、クラス `kindle-ja`）がなければ、`emacs -nw` で Org ファイルを開く
@@ -25,7 +26,19 @@ Kindle Cloud Reader の本文はブラウザの DOM にテキストとして入�
 
 訳している間にもう一度押しても、二重には動かない（通知が出るだけ）。
 
-## 段落の組み立て
+## OCR サーバー（kindle-ja-ocrd）
+
+RapidOCR（PaddleOCR の PP-OCRv6 small を onnxruntime-gpu で動かす）を、`127.0.0.1:8093` で常駐させる小さな HTTP サーバー。
+起動にモデルの読み込みと CUDA の初期化で数秒かかるので、キーを押すたびには起動しない。kindle-ja が必要なときに `systemctl --user start kindle-ja-ocrd` で起こし、10 分使われなければ自分で終わって VRAM を返す。使う VRAM は 1GB ほど。
+
+- `GET /health`：`{"status": "ok"}`
+- `POST /ocr`：本文に画像（PNG など）を送ると、`{"paragraphs": [...], "seconds": 0.4}` を返す
+
+画像は中で 2 倍に拡大してから読む。Kindle の文字は 1 行の高さが 25px ほどしかなく、等倍のままだと `!` を `l` と読むことがあった。
+
+段落は行の位置から組み立てる。Kindle は段落の間を、段落の中の行間より少し広く空ける（2 倍に拡大した画面で 65〜67 に対して 74〜83）。行の中心どうしの間隔を小さい順に並べ、初めて 6% 以上跳ねたところを段落の切れ目のしきい値にする。跳ねるところがない（1 行の段落ばかり、または段落が 1 つだけの）ページは、間隔が行の高さの 1.45 倍より広ければ全部を切れ目にする。行末のハイフンは、次の行が小文字で始まるときだけ取ってつなぐ。
+
+## 段落の組み立て（tesseract で読むとき）
 
 tesseract は段落の途中にも空行を入れたり、段落の間に空行を入れなかったりするので、次の規則で段落を組み直す。
 
@@ -41,6 +54,7 @@ tesseract は段落の途中にも空行を入れたり、段落の間に空行�
 - `jq`、`curl`、`notify-send`
 - `kitty`、`emacs`（`emacs-nox` で可）
 - OpenAI 互換 API を持つローカル LLM サーバー（llama.cpp の `llama-server` など）
+- OCR サーバーを使うなら：Python 3、NVIDIA の GPU（ドライバは CUDA 13 に対応したもの。CUDA と cuDNN のライブラリは pip で入る）
 
 Arch Linux なら次で入る。
 
@@ -51,9 +65,13 @@ sudo pacman -S --needed grim slurp tesseract tesseract-data-eng imagemagick jq c
 ## インストール
 
 ```sh
-./deploy            # ~/.local/bin に入れる
+./setup-ocrd        # OCR サーバーの環境を ~/.local/share/kindle-ja/venv に作る（約 2.7GB、初回だけ）
+./deploy            # kindle-ja と kindle-ja-ocrd を ~/.local/bin に入れ、kindle-ja-ocrd.service を置く
 ./deploy ~/bin      # 入れる場所を指定する
 ```
+
+`setup-ocrd` は RapidOCR 3.10.0 と `onnxruntime-gpu[cuda,cudnn]` 1.31.1 を入れ、モデルを取ってきて、CUDA が使えるか確かめる。
+RapidOCR は CPU 版の onnxruntime を引っぱってくるので、入れたあとで GPU 版に入れ替えている。`setup-ocrd` をしなければ、kindle-ja は tesseract で読む。
 
 Hyprland（Lua 設定）のキー割り当て例。
 
@@ -91,6 +109,10 @@ kindle-ja --select       # 取り込む範囲を slurp で選び直して保存�
 | `KINDLE_JA_LLM_MODEL` | モデル ID。`model` ファイルより優先する |
 | `KINDLE_JA_LLM_URL` | API の URL。既定は `http://127.0.0.1:8080/v1/chat/completions` |
 | `KINDLE_JA_DIR` | Org ファイルを置くディレクトリ。既定は `~/Documents/kindle-ja` |
+| `KINDLE_JA_OCR` | `tesseract` にすると、OCR サーバーを使わず tesseract で読む。既定は `server` |
+| `KINDLE_JA_OCR_URL` | OCR サーバーの URL。既定は `http://127.0.0.1:8093` |
+
+OCR サーバー（`kindle-ja-ocrd`）の環境変数は、`KINDLE_JA_OCRD_PORT`（既定 8093）、`KINDLE_JA_OCRD_IDLE`（使われないまま終わるまでの秒数、既定 600、0 で終わらない）、`KINDLE_JA_OCRD_CPU`（1 で GPU を使わない）。
 
 ## 速さ
 
@@ -103,9 +125,23 @@ Ryzen 7 3700X、RTX 3060（VRAM 12GB）、llama.cpp v0.9.0。モデルを読み�
 | `gemma-4-E4B-it-qat` | 約 5.6 秒 | 約 4.3 秒 | 音声入力用に常駐 |
 | `gemma-4-12b-it-qat-imatrix` | 約 10.7 秒 | 約 9.4 秒 | E4B と同時には載らない |
 
-拡大と OCR（tesseract、CPU 16 スレッド）は、どのモデルでも約 1.3 秒。tesseract は CPU で動き、GPU は使わない。拡大しないと OCR は 0.2 秒ほど速くなるが、`I` を `1` と読み違えることがあったので拡大している。
+ここまでの OCR は tesseract（CPU 16 スレッド、2 倍に拡大）で、拡大と OCR でどのモデルでも約 1.3 秒。PLaMo（翻訳専用の 0.8B）にすると、時間の大半は OCR になる。
 
-PLaMo（翻訳専用の 0.8B）にすると、時間の大半は OCR になる。訳の出来は、同じページでそれぞれ癖があった。
+そこで OCR を GPU にした。同じ Kindle の画面（1000x1112）を読ませ、2 回目以降の時間と、tesseract（2 倍に拡大）と単語が食い違った数を比べた。
+
+| OCR | 渡す画像 | 1 ページ | 食い違い |
+| --- | --- | --- | --- |
+| tesseract（CPU） | 2 倍 | 約 0.9 秒（拡大に 0.2〜0.4 秒） | 基準 |
+| RapidOCR（PP-OCRv6 small、GPU）← kindle-ja-ocrd | 2 倍 | 約 0.57 秒 | 0 |
+| RapidOCR（同、GPU） | 等倍 | 約 0.43 秒 | 10（`!` → `l` など） |
+| RapidOCR（PP-OCRv6 medium、GPU） | 2 倍 | 約 0.81 秒 | 0 |
+| PaddleOCR 3.7 本体（PP-OCRv6 medium、GPU） | 等倍 | 約 0.49 秒 | 0 |
+
+PaddleOCR 本体は拡大しなくても正しく読めたが、PaddlePaddle が Python 3.14 向けに配られておらず、Python 3.12 と合わせて約 10GB になる。RapidOCR はシステムの Python のまま約 2.7GB で入り、2 倍に拡大すれば同じ結果になるので、こちらにした。cuDNN の畳み込みの探し方は `HEURISTIC` にしている（既定の `EXHAUSTIVE` は、画像の大きさが変わるたびに 1 秒以上かけて探し直す）。
+
+OCR サーバー ＋ PLaMo で、1 ページ全体は約 1.0 秒（OCR サーバーの起動を含む最初の 1 枚は約 5.4 秒）。
+
+訳の出来は、同じページでそれぞれ癖があった。
 
 - PLaMo：「Oh dear! Oh dear!」の繰り返しまで訳すが、川の土手の bank を「銀行」と訳し、waistcoat が「ウェストコート」のまま。
 - E4B：読めるが、誤字（「うんざかり」）や、ぎこちない文がある。
@@ -116,10 +152,11 @@ PLaMo（翻訳専用の 0.8B）にすると、時間の大半は OCR になる�
 ## テスト
 
 ```sh
-make test   # shellcheck と bats
+make test   # shellcheck、bats、Python の unittest
 ```
 
-画面取り込み・OCR・LLM・Hyprland はスタブに差し替えて、段落の組み立て、Org への追記、範囲とモデルの設定、失敗時の動きを確かめる。
+bats では、画面取り込み・OCR・LLM・Hyprland・systemd をスタブに差し替えて、段落の組み立て、Org への追記、範囲とモデルの設定、OCR サーバーと tesseract の切り替え、失敗時の動きを確かめる。
+Python の unittest（`tests/test_ocrd.py`）では、OCR の枠を手で作って、kindle-ja-ocrd の段落の組み立てを確かめる（RapidOCR は要らない）。
 
 ## 注意
 

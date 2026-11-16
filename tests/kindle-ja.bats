@@ -16,16 +16,27 @@ setup() {
     printf '#!/bin/sh\necho "%s $*" >> "$STUB_LOG"\neval "touch \\"\\${$#}\\""\n' "$cmd" > "$stub/$cmd"
   done
   # tesseract は OCR 結果の代わりに $OCR_TEXT を出す
-  printf '#!/bin/sh\nprintf "%%s\\n" "$OCR_TEXT"\n' > "$stub/tesseract"
-  # curl は受け取った JSON を残し、固定の訳を返す
+  printf '#!/bin/sh\necho "tesseract $*" >> "$STUB_LOG"\nprintf "%%s\\n" "$OCR_TEXT"\n' > "$stub/tesseract"
+  # curl は URL で振り分ける。OCR サーバーは OCRD_UP=1 のときだけ動いている扱い。
+  # LLM には、受け取った JSON を残して固定の訳を返す
   cat > "$stub/curl" <<'EOF'
 #!/bin/sh
+url= data=
 while [ "$#" -gt 0 ]; do
-  [ "$1" = -d ] && printf '%s' "$2" > "$STUB_LOG.payload"
+  case $1 in
+    -d) data=$2; shift ;;
+    http*) url=$1 ;;
+  esac
   shift
 done
-printf '{"choices":[{"message":{"content":"訳文です。"}}]}'
+case $url in
+  */health) [ "${OCRD_UP:-}" = 1 ] || exit 7; echo '{"status":"ok"}' ;;
+  */ocr) [ "${OCRD_UP:-}" = 1 ] || exit 7; echo "ocrd $url" >> "$STUB_LOG"; printf '%s' "$OCRD_JSON" ;;
+  *) printf '%s' "$data" > "$STUB_LOG.payload"; printf '{"choices":[{"message":{"content":"訳文です。"}}]}' ;;
+esac
 EOF
+  # systemd は OCR サーバーを起こせない（サービスがない）扱い。起こそうとしたことは記録する
+  printf '#!/bin/sh\necho "systemctl $*" >> "$STUB_LOG"\nexit 5\n' > "$stub/systemctl"
   # 表示用の窓はすでにある扱いにして、kitty を起動させない
   printf '#!/bin/sh\necho "[{\\"class\\":\\"kindle-ja\\"}]"\n' > "$stub/hyprctl"
   printf '#!/bin/sh\nexit 0\n' > "$stub/notify-send"
@@ -133,4 +144,37 @@ EOF
   run "$script" viewer
   [ "$status" -eq 0 ]
   grep -q '^kitty -f kitty --class kindle-ja -e emacs -nw .*viewer.org --eval ' "$STUB_LOG"
+}
+
+@test "OCR サーバーが動いていれば、その段落を使い tesseract は使わない" {
+  export OCRD_UP=1
+  export OCRD_JSON='{"paragraphs":["THE CAPTAIN","(She looks at the console.)","I know every corridor."],"seconds":0.4}'
+  run "$script" server
+  [ "$status" -eq 0 ]
+  grep -q '^ocrd http://127.0.0.1:8093/ocr' "$STUB_LOG"
+  if grep -q '^tesseract' "$STUB_LOG"; then false; fi
+  org="$KINDLE_JA_DIR/server.org"
+  grep -qx 'THE CAPTAIN' "$org"
+  grep -qx '(She looks at the console.)' "$org"
+  # 段落は空行で区切って LLM に渡す
+  grep -q 'THE CAPTAIN\\n\\n(She looks at the console.)\\n\\nI know every corridor.' "$STUB_LOG.payload"
+}
+
+@test "OCR サーバーがなければ systemd で起こそうとし、だめなら tesseract で読む" {
+  ocr_page
+  run "$script" fallback
+  [ "$status" -eq 0 ]
+  grep -q '^systemctl --user start kindle-ja-ocrd.service' "$STUB_LOG"
+  grep -q '^tesseract' "$STUB_LOG"
+  grep -qx 'NAVIGATOR' "$KINDLE_JA_DIR/fallback.org"
+}
+
+@test "KINDLE_JA_OCR=tesseract なら OCR サーバーを使わない" {
+  export OCRD_UP=1 OCRD_JSON='{"paragraphs":["from server"]}' KINDLE_JA_OCR=tesseract
+  ocr_page
+  run "$script" forced
+  [ "$status" -eq 0 ]
+  if grep -q '^ocrd' "$STUB_LOG"; then false; fi
+  if grep -q '^systemctl' "$STUB_LOG"; then false; fi
+  grep -q '^tesseract' "$STUB_LOG"
 }
