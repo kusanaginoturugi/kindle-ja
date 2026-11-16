@@ -12,7 +12,8 @@ Kindle Cloud Reader の本文はブラウザの DOM にテキストとして入�
 4. 一幕劇で試すと、戯曲の話者名やト書きが崩れたので、段落の組み立てを直した。最初は会話モデルの Gemma 4 E4B で訳していて、1 画面 6 秒ほど、内容はつかめる程度の自然さだった。
 5. あとから、翻訳専用の PLaMo 3 Translate 0.8B（同じブラウザ拡張で使っていたモデル）にすればよかったと気づいて、既定にした。1 画面 2 秒ほどになり、時間の大半は OCR になった。
 6. 時間の大半が OCR になったので、OCR も GPU で動かすことにした。PaddleOCR 本体と、同じ PaddleOCR のモデル（PP-OCRv6）を onnxruntime で動かす RapidOCR を比べ、環境の軽い RapidOCR を常駐させる OCR サーバー（`kindle-ja-ocrd`）にした。1 画面 1 秒ほどになった。
-7. それでも本命の本は、結局日本語版の紙の本を買った（あとで探したら日本語版があった）。話題の本なので、読み終わったら回し読みしたい。日本の Kindle の本は人に貸せないし、買っても実際は読む権利を借りているだけなのに、値段は紙の本と変わらない。それに、一冊を通して読むには、ローカル LLM の訳はまだ人の訳に及ばない。このスクリプトは、日本語版がない本や、とりあえず中身を知りたい本に使う。
+7. ここまで軽くなったので、訳を VOICEVOX で読み上げられるようにした（`kindle-ja-say`）。
+8. それでも本命の本は、結局日本語版の紙の本を買った（あとで探したら日本語版があった）。話題の本なので、読み終わったら回し読みしたい。日本の Kindle の本は人に貸せないし、買っても実際は読む権利を借りているだけなのに、値段は紙の本と変わらない。それに、一冊を通して読むには、ローカル LLM の訳はまだ人の訳に及ばない。このスクリプトは、日本語版がない本や、とりあえず中身を知りたい本に使う。
 
 ## 動作
 
@@ -25,6 +26,12 @@ Kindle Cloud Reader の本文はブラウザの DOM にテキストとして入�
 表示用の Emacs は読み取り専用で、`auto-revert-mode` で追記を読み直す。読み直すたびに原文の quote ブロックを畳み、いちばん新しい見出しを窓の先頭に置くので、見出しのすぐ下から訳を読める。原文を見たいときは `#+begin_quote` の行で `TAB` を押すと開く。日本語は `visual-line-mode` と `word-wrap-by-category` で窓の幅に合わせて折り返す。
 
 訳している間にもう一度押しても、二重には動かない（通知が出るだけ）。
+
+### 読み上げ（kindle-ja-say）
+
+`~/.config/kindle-ja/voice` に VOICEVOX の話者 ID と速さ（例 `3 1.18`、ずんだもんを 1.18 倍で）を書くと、訳を書き足したあとで読み上げる。
+訳を「。」で文に分け（「！」「？」は空白が続くときだけ）、1 文目を流しているあいだに次の文を合成する。VOICEVOX ENGINE が CPU 版でも、合成は再生の 5 倍ほど速く、キーを押してから 1 文目が鳴るまで 1.4 秒ほど（Ryzen 7 3700X）。
+次のページで `SUPER + Y` を押すと、前のページの読み上げはすぐ止まる。`kindle-ja --stop` でも止められる。再生は `pw-play`（PipeWire）。
 
 ### Emacs 以外のエディタで読む
 
@@ -60,6 +67,7 @@ tesseract は段落の途中にも空行を入れたり、段落の間に空行�
 - `jq`、`curl`、`notify-send`
 - `kitty`、`emacs`（`emacs-nox` で可）
 - OpenAI 互換 API を持つローカル LLM サーバー（llama.cpp の `llama-server` など）
+- 読み上げるなら：VOICEVOX ENGINE（`127.0.0.1:50021`）と `pw-play`（PipeWire）
 - OCR サーバーを使うなら：Python 3、NVIDIA の GPU（ドライバは CUDA 13 に対応したもの。CUDA と cuDNN のライブラリは pip で入る）
 
 Arch Linux なら次で入る。
@@ -84,6 +92,7 @@ Hyprland（Lua 設定）のキー割り当て例。
 ```lua
 hl.bind(main_mod .. " + Y", hl.dsp.exec_cmd("kindle-ja"), { description = "Kindle の範囲を OCR して訳す" })
 hl.bind(main_mod .. " + SHIFT + Y", hl.dsp.exec_cmd("kindle-ja --select"), { description = "kindle-ja の取り込み範囲を選び直す" })
+hl.bind(main_mod .. " + CTRL + Y", hl.dsp.exec_cmd("kindle-ja --stop"), { description = "kindle-ja の読み上げを止める" })
 ```
 
 ## 使い方
@@ -92,6 +101,7 @@ hl.bind(main_mod .. " + SHIFT + Y", hl.dsp.exec_cmd("kindle-ja --select"), { des
 kindle-ja                # 決まった範囲を取り込んで訳す
 kindle-ja 本の名前       # その名前の Org ファイルに追記する
 kindle-ja --select       # 取り込む範囲を slurp で選び直して保存する（訳はしない）
+kindle-ja --stop         # 読み上げを止める
 ```
 
 ふだんはキー割り当てから引数なしで使う。Kindle でページを送り、`SUPER + Y` を押して、訳が出たら次のページへ進む。
@@ -105,6 +115,7 @@ kindle-ja --select       # 取り込む範囲を slurp で選び直して保存�
 | `geometry` | 取り込む範囲（`grim -g` の形式、例 `148,197 1000x1112`） | `148,197 1000x1112` |
 | `book` | 追記する Org ファイルの名前 | `kindle` |
 | `model` | 翻訳に使うモデル ID（`/v1/models` に出るもの） | `plamo-3-translate-0.8b` |
+| `voice` | 読み上げる VOICEVOX の話者 ID と速さ（例 `3 1.18`） | 読み上げない |
 
 範囲の既定値は、2560x1440 の画面の左半分に Firefox を置いて Kindle Cloud Reader を開いたときの本文の位置（左右のページ送りボタンは外してある）。ウィンドウの位置や文字の大きさを変えたら、`kindle-ja --select`（`SUPER + SHIFT + Y`）で選び直す。
 
@@ -117,6 +128,9 @@ kindle-ja --select       # 取り込む範囲を slurp で選び直して保存�
 | `KINDLE_JA_DIR` | Org ファイルを置くディレクトリ。既定は `~/Documents/kindle-ja` |
 | `KINDLE_JA_OCR` | `tesseract` にすると、OCR サーバーを使わず tesseract で読む。既定は `server` |
 | `KINDLE_JA_OCR_URL` | OCR サーバーの URL。既定は `http://127.0.0.1:8093` |
+| `KINDLE_JA_VOICE` | 読み上げの話者 ID と速さ。`voice` ファイルより優先する |
+| `KINDLE_JA_VOICEVOX_URL` | VOICEVOX ENGINE の URL。既定は `http://127.0.0.1:50021` |
+| `KINDLE_JA_PLAYER` | 再生に使うコマンド。既定は `pw-play` |
 
 OCR サーバー（`kindle-ja-ocrd`）の環境変数は、`KINDLE_JA_OCRD_PORT`（既定 8093）、`KINDLE_JA_OCRD_IDLE`（使われないまま終わるまでの秒数、既定 600、0 で終わらない）、`KINDLE_JA_OCRD_CPU`（1 で GPU を使わない）。
 
@@ -161,7 +175,7 @@ OCR サーバー ＋ PLaMo で、1 ページ全体は約 1.0 秒（OCR サーバ
 make test   # shellcheck、bats、Python の unittest
 ```
 
-bats では、画面取り込み・OCR・LLM・Hyprland・systemd をスタブに差し替えて、段落の組み立て、Org への追記、範囲とモデルの設定、OCR サーバーと tesseract の切り替え、失敗時の動きを確かめる。
+bats では、画面取り込み・OCR・LLM・Hyprland・systemd・VOICEVOX・再生をスタブに差し替えて、段落の組み立て、Org への追記、範囲とモデルの設定、OCR サーバーと tesseract の切り替え、読み上げの文の分け方と止め方、失敗時の動きを確かめる。
 Python の unittest（`tests/test_ocrd.py`）では、OCR の枠を手で作って、kindle-ja-ocrd の段落の組み立てを確かめる（RapidOCR は要らない）。
 
 ## 注意

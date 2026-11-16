@@ -5,4 +5,4 @@ test: lint
 	python3 -m unittest discover -s tests
 
 lint:
-	shellcheck kindle-ja deploy setup-ocrd
+	shellcheck kindle-ja kindle-ja-say deploy setup-ocrd

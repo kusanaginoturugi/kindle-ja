@@ -11,6 +11,12 @@
 #
 #        kindle-ja --select
 #   範囲を slurp で選び直して geometry に保存する（訳はしない）。
+#
+#        kindle-ja --stop
+#   読み上げを止める。
+#
+#   ~/.config/kindle-ja/voice に「話者ID [速さ]」（例 3 1.18）を書くと、訳を VOICEVOX で読み上げる（kindle-ja-say）。
+#   キーを押すたびに、前の読み上げは止める。
 
 set -eu
 umask 077
@@ -20,6 +26,7 @@ out_dir="${KINDLE_JA_DIR:-$HOME/Documents/kindle-ja}"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/kindle-ja"
 book_file="$config_dir/book"
 geometry_file="$config_dir/geometry"
+voice_file="$config_dir/voice"
 # 2560x1440 の左半分に Firefox を置いたときの Kindle Cloud Reader の本文（左右のページ送りボタンは外す）
 default_geometry="148,197 1000x1112"
 llm_url="${KINDLE_JA_LLM_URL:-http://127.0.0.1:8080/v1/chat/completions}"
@@ -40,6 +47,14 @@ ocr_engine="${KINDLE_JA_OCR:-server}"
 notify() {
   notify-send -a kindle-ja -t "${2:-3000}" "kindle-ja" "$1" 2>/dev/null || :
 }
+
+# 読み上げは、キーを押したらすぐ止める（次のページを訳しているあいだ、前のページを読み続けない）
+if command -v kindle-ja-say >/dev/null 2>&1; then
+  kindle-ja-say --stop
+fi
+if [ "${1:-}" = --stop ]; then
+  exit 0
+fi
 
 if [ "${1:-}" = --select ]; then
   geometry=$(slurp) || exit 0
@@ -176,6 +191,16 @@ viewer_elisp='(progn
 if ! hyprctl clients -j | jq -e --arg c "$window_class" 'any(.[]; .class == $c)' >/dev/null; then
   setsid -f kitty --class "$window_class" -e emacs -nw "$org" --eval "$viewer_elisp" \
     >/dev/null 2>&1
+fi
+
+# 声の設定があれば、訳を読み上げる（KINDLE_JA_VOICE が優先。「話者ID [速さ]」）
+voice="${KINDLE_JA_VOICE:-}"
+if [ -z "$voice" ] && [ -r "$voice_file" ]; then
+  voice=$(head -n 1 "$voice_file")
+fi
+if [ -n "$voice" ] && command -v kindle-ja-say >/dev/null 2>&1; then
+  # shellcheck disable=SC2086 # 話者 ID と速さに分けたい
+  printf '%s\n' "$translation" | setsid -f kindle-ja-say $voice >/dev/null 2>&1
 fi
 
 notify "訳した → $book.org"

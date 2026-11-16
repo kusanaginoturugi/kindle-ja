@@ -40,7 +40,15 @@ EOF
   # 表示用の窓はすでにある扱いにして、kitty を起動させない
   printf '#!/bin/sh\necho "[{\\"class\\":\\"kindle-ja\\"}]"\n' > "$stub/hyprctl"
   printf '#!/bin/sh\nexit 0\n' > "$stub/notify-send"
-  printf '#!/bin/sh\necho "kitty $*" >> "$STUB_LOG"\n' > "$stub/setsid"
+  # setsid は、表示用の kitty と読み上げ（kindle-ja-say）の起動に使う。読み上げなら渡された文章も記録する
+  cat > "$stub/setsid" <<'EOF'
+#!/bin/sh
+echo "setsid $*" >> "$STUB_LOG"
+[ "$2" = kindle-ja-say ] && cat > "$STUB_LOG.say"
+exit 0
+EOF
+  # kindle-ja-say は呼ばれた引数を記録するだけ
+  printf '#!/bin/sh\necho "say $*" >> "$STUB_LOG"\n' > "$stub/kindle-ja-say"
   printf '#!/bin/sh\necho "10,20 300x400"\n' > "$stub/slurp"
   chmod +x "$stub"/*
   export PATH="$stub:$PATH"
@@ -143,7 +151,7 @@ EOF
   ocr_page
   run "$script" viewer
   [ "$status" -eq 0 ]
-  grep -q '^kitty -f kitty --class kindle-ja -e emacs -nw .*viewer.org --eval ' "$STUB_LOG"
+  grep -q '^setsid -f kitty --class kindle-ja -e emacs -nw .*viewer.org --eval ' "$STUB_LOG"
 }
 
 @test "OCR サーバーが動いていれば、その段落を使い tesseract は使わない" {
@@ -177,4 +185,35 @@ EOF
   if grep -q '^ocrd' "$STUB_LOG"; then false; fi
   if grep -q '^systemctl' "$STUB_LOG"; then false; fi
   grep -q '^tesseract' "$STUB_LOG"
+}
+
+@test "キーを押すと、まず前の読み上げを止める" {
+  ocr_page
+  run "$script"
+  [ "$status" -eq 0 ]
+  [ "$(head -n 1 "$STUB_LOG")" = 'say --stop' ]
+}
+
+@test "--stop は読み上げを止めるだけで、画面を取り込まない" {
+  run "$script" --stop
+  [ "$status" -eq 0 ]
+  grep -qx 'say --stop' "$STUB_LOG"
+  if grep -q '^grim' "$STUB_LOG"; then false; fi
+}
+
+@test "声の設定があれば、訳を読み上げる" {
+  mkdir -p "$XDG_CONFIG_HOME/kindle-ja"
+  echo '3 1.18' > "$XDG_CONFIG_HOME/kindle-ja/voice"
+  ocr_page
+  run "$script" voice
+  [ "$status" -eq 0 ]
+  grep -qx 'setsid -f kindle-ja-say 3 1.18' "$STUB_LOG"
+  grep -qx '訳文です。' "$STUB_LOG.say"
+}
+
+@test "声の設定がなければ、読み上げない" {
+  ocr_page
+  run "$script" silent
+  [ "$status" -eq 0 ]
+  if grep -q '^setsid -f kindle-ja-say' "$STUB_LOG"; then false; fi
 }

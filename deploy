@@ -13,7 +13,7 @@ install_dir=${1:-"$HOME/.local/bin"}
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 
 mkdir -p -- "$install_dir" "$unit_dir"
-install -m 755 -- "$script_dir/kindle-ja" "$script_dir/kindle-ja-ocrd" "$install_dir/"
+install -m 755 -- "$script_dir/kindle-ja" "$script_dir/kindle-ja-ocrd" "$script_dir/kindle-ja-say" "$install_dir/"
 # サービスは入れた場所の kindle-ja-ocrd を起動する
 sed "s|%h/.local/bin/kindle-ja-ocrd|$install_dir/kindle-ja-ocrd|" \
   "$script_dir/systemd/kindle-ja-ocrd.service" > "$unit_dir/kindle-ja-ocrd.service"
@@ -24,4 +24,4 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl --user try-restart kindle-ja-ocrd.service
 fi
 
-printf 'Installed kindle-ja, kindle-ja-ocrd to %s and kindle-ja-ocrd.service to %s\n' "$install_dir" "$unit_dir"
+printf 'Installed kindle-ja, kindle-ja-ocrd, kindle-ja-say to %s and kindle-ja-ocrd.service to %s\n' "$install_dir" "$unit_dir"

@@ -1,0 +1,65 @@
+#!/bin/sh
+# 訳を VOICEVOX で読み上げる。標準入力の文章を文に分けて順に合成し、前の文を流しているあいだに次の文を合成する。
+#
+# 使い方: kindle-ja-say 話者ID [速さ] < 文章
+#         kindle-ja-say --stop        # 読み上げを止める
+#
+# 新しく読み上げを始めると、前の読み上げは止める。kindle-ja からは setsid で起動するので、
+# 止めるときはプロセスグループごと（再生中の pw-play も）止める。
+set -eu
+
+state_dir="${XDG_RUNTIME_DIR:?}/kindle-ja"
+pid_file="$state_dir/say.pid"
+url="${KINDLE_JA_VOICEVOX_URL:-http://127.0.0.1:50021}"
+player="${KINDLE_JA_PLAYER:-pw-play}"
+
+stop() {
+  [ -r "$pid_file" ] || return 0
+  pid=$(cat "$pid_file")
+  rm -f "$pid_file"
+  case $pid in '' | *[!0-9]*) return 0 ;; esac
+  # PID が別のプロセスに使い回されていたら止めない
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q kindle-ja-say || return 0
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || :
+}
+
+if [ "${1:-}" = --stop ]; then
+  stop
+  exit 0
+fi
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  printf 'Usage: %s SPEAKER [SPEED] < text\n       %s --stop\n' "$0" "$0" >&2
+  exit 2
+fi
+speaker=$1
+speed=${2:-1.0}
+
+mkdir -p "$state_dir"
+stop
+echo $$ > "$pid_file"
+work=$(mktemp -d "$state_dir/say.XXXXXX")
+trap 'rm -rf "$work"; [ "$(cat "$pid_file" 2>/dev/null)" != "$$" ] || rm -f "$pid_file"' EXIT
+trap 'exit 143' INT TERM
+
+# 文に分ける。「。」（と、それに続く閉じかっこ）のあとでは必ず切る。「！」「？」は、空白が続くときだけ切る
+# （「つまらない！」と思った。を途中で切らない）。空の行は捨てる
+awk '{ gsub(/。[」』）]*/, "&\n"); gsub(/[！？!?]+[」』）]*[ 　]+/, "&\n"); print }' |
+  sed 's/^[[:space:]　]*//; /^$/d' > "$work/sentences"
+
+synth() {
+  curl -sf --max-time 30 -X POST --get --data-urlencode "text=$1" "$url/audio_query?speaker=$speaker" |
+    jq --argjson s "$speed" '.speedScale = $s' > "$work/query.json" &&
+    curl -sf --max-time 60 -X POST -H 'Content-Type: application/json' --data @"$work/query.json" \
+      "$url/synthesis?speaker=$speaker" -o "$2"
+}
+
+i=0
+playing=
+while IFS= read -r sentence; do
+  i=$((i + 1))
+  synth "$sentence" "$work/$i.wav" || continue
+  [ -z "$playing" ] || wait "$playing" || :
+  "$player" "$work/$i.wav" &
+  playing=$!
+done < "$work/sentences"
+[ -z "$playing" ] || wait "$playing" || :
