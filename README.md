@@ -124,6 +124,7 @@ kindle-ja --stop         # 読み上げを止める
 | 変数 | 内容 |
 | --- | --- |
 | `KINDLE_JA_LLM_MODEL` | モデル ID。`model` ファイルより優先する |
+| `KINDLE_JA_GEOMETRY` | 取り込む範囲。`geometry` ファイルより優先し、ファイルは書き換えない |
 | `KINDLE_JA_LLM_URL` | API の URL。既定は `http://127.0.0.1:8080/v1/chat/completions` |
 | `KINDLE_JA_DIR` | Org ファイルを置くディレクトリ。既定は `~/Documents/kindle-ja` |
 | `KINDLE_JA_OCR` | `tesseract` にすると、OCR サーバーを使わず tesseract で読む。既定は `server` |

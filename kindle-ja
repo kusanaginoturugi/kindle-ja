@@ -69,6 +69,8 @@ if [ -r "$geometry_file" ]; then
   saved=$(head -n 1 "$geometry_file")
   geometry=${saved:-$default_geometry}
 fi
+# KINDLE_JA_GEOMETRY があれば、その場だけその範囲を使う（設定ファイルは書き換えない）
+geometry=${KINDLE_JA_GEOMETRY:-$geometry}
 
 book=${1:-}
 if [ -z "$book" ] && [ -r "$book_file" ]; then

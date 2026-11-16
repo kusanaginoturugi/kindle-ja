@@ -234,3 +234,14 @@ EOF
   [ "$status" -eq 0 ]
   grep -q '"temperature": 0,' "$STUB_LOG.payload"
 }
+
+@test "KINDLE_JA_GEOMETRY があれば、保存した範囲より優先する" {
+  mkdir -p "$XDG_CONFIG_HOME/kindle-ja"
+  echo '10,20 300x400' > "$XDG_CONFIG_HOME/kindle-ja/geometry"
+  export KINDLE_JA_GEOMETRY='1,2 30x40'
+  ocr_page
+  run "$script"
+  [ "$status" -eq 0 ]
+  grep -q '^grim -g 1,2 30x40 ' "$STUB_LOG"
+  [ "$(cat "$XDG_CONFIG_HOME/kindle-ja/geometry")" = '10,20 300x400' ]
+}
