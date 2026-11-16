@@ -95,13 +95,21 @@ EOF
   grep -q '^grim -g 10,20 300x400 ' "$STUB_LOG"
 }
 
-@test "モデル設定ファイルのモデルを LLM に渡す" {
-  mkdir -p "$XDG_CONFIG_HOME/kindle-ja"
-  echo plamo-3-translate-0.8b > "$XDG_CONFIG_HOME/kindle-ja/model"
+@test "既定では PLaMo に日本語を指定して訳させる" {
   ocr_page
   run "$script"
   [ "$status" -eq 0 ]
   grep -q '"model": "plamo-3-translate-0.8b"' "$STUB_LOG.payload"
+  grep -q '"target_lang": "ja"' "$STUB_LOG.payload"
+}
+
+@test "モデル設定ファイルのモデルを LLM に渡す" {
+  mkdir -p "$XDG_CONFIG_HOME/kindle-ja"
+  echo gemma-4-E4B-it-qat > "$XDG_CONFIG_HOME/kindle-ja/model"
+  ocr_page
+  run "$script"
+  [ "$status" -eq 0 ]
+  grep -q '"model": "gemma-4-E4B-it-qat"' "$STUB_LOG.payload"
 }
 
 @test "文字が読めなければ何も追記しない" {

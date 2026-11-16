@@ -22,8 +22,9 @@ geometry_file="$config_dir/geometry"
 # 2560x1440 の左半分に Firefox を置いたときの Kindle Cloud Reader の本文（左右のページ送りボタンは外す）
 default_geometry="148,197 1000x1112"
 llm_url="${KINDLE_JA_LLM_URL:-http://127.0.0.1:8080/v1/chat/completions}"
-# voice-input と同じ E4B を既定にする。12B は E4B と同時に VRAM に載らない。
-llm_model_default=gemma-4-E4B-it-qat
+# 翻訳専用の PLaMo 3 Translate 0.8B を既定にする。1 画面の翻訳が 1 秒かからず、
+# 常駐している E4B（voice-input）と同時に VRAM に載る。12B は E4B と同時には載らない。
+llm_model_default=plamo-3-translate-0.8b
 llm_model_file="${XDG_CONFIG_HOME:-$HOME/.config}/kindle-ja/model"
 if [ -r "$llm_model_file" ]; then
   configured_model=$(head -n 1 "$llm_model_file")
@@ -98,9 +99,12 @@ fi
 
 notify "翻訳中…" 60000
 
+# PLaMo の chat template は先頭の system を無視し、翻訳先を chat_template_kwargs.target_lang で受け取る。
+# Gemma などの会話モデルは system の指示で訳し、target_lang は使わない。
 payload=$(jq -n --arg model "$llm_model" --arg text "$source_text" '{
   model: $model,
   temperature: 0.2,
+  chat_template_kwargs: {target_lang: "ja"},
   messages: [
     {role: "system", content: "You translate pages of an English book into natural, literary Japanese. The text comes from OCR of one screen, so it may start or end in the middle of a sentence and may contain small OCR errors; fix obvious OCR errors silently. Keep the paragraph breaks. Output only the Japanese translation."},
     {role: "user", content: $text}
