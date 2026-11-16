@@ -1,0 +1,153 @@
+#!/bin/sh
+# Kindle Cloud Reader の本文の範囲を画面から取り込んで OCR し、ローカル LLM で日本語に訳して Org ファイルに追記する。
+# 追記先は kitty の中の emacs -nw で開き、追記されるたびに新しい見出しを窓の先頭に出す。
+#
+# 使い方: kindle-ja [本の名前]
+#   本の名前を省略すると ~/.config/kindle-ja/book の 1 行目、それもなければ kindle。
+#   訳は ~/Documents/kindle-ja/<本の名前>.org にたまる。
+#   取り込む範囲は ~/.config/kindle-ja/geometry の 1 行目（grim -g の形式）。なければ既定値。
+#   モデルは ~/.config/kindle-ja/model の 1 行目、または KINDLE_JA_LLM_MODEL。
+#
+#        kindle-ja --select
+#   範囲を slurp で選び直して geometry に保存する（訳はしない）。
+
+set -eu
+umask 077
+
+state_dir="${XDG_RUNTIME_DIR:?}/kindle-ja"
+out_dir="${KINDLE_JA_DIR:-$HOME/Documents/kindle-ja}"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/kindle-ja"
+book_file="$config_dir/book"
+geometry_file="$config_dir/geometry"
+# 2560x1440 の左半分に Firefox を置いたときの Kindle Cloud Reader の本文（左右のページ送りボタンは外す）
+default_geometry="148,197 1000x1112"
+llm_url="${KINDLE_JA_LLM_URL:-http://127.0.0.1:8080/v1/chat/completions}"
+# voice-input と同じ E4B を既定にする。12B は E4B と同時に VRAM に載らない。
+llm_model_default=gemma-4-E4B-it-qat
+llm_model_file="${XDG_CONFIG_HOME:-$HOME/.config}/kindle-ja/model"
+if [ -r "$llm_model_file" ]; then
+  configured_model=$(head -n 1 "$llm_model_file")
+  [ -z "$configured_model" ] || llm_model_default=$configured_model
+fi
+llm_model="${KINDLE_JA_LLM_MODEL:-$llm_model_default}"
+window_class=kindle-ja
+
+notify() {
+  notify-send -a kindle-ja -t "${2:-3000}" "kindle-ja" "$1" 2>/dev/null || :
+}
+
+if [ "${1:-}" = --select ]; then
+  geometry=$(slurp) || exit 0
+  mkdir -p "$config_dir"
+  printf '%s\n' "$geometry" > "$geometry_file"
+  notify "範囲を保存した: $geometry"
+  exit 0
+fi
+
+geometry=$default_geometry
+if [ -r "$geometry_file" ]; then
+  saved=$(head -n 1 "$geometry_file")
+  geometry=${saved:-$default_geometry}
+fi
+
+book=${1:-}
+if [ -z "$book" ] && [ -r "$book_file" ]; then
+  book=$(head -n 1 "$book_file")
+fi
+book=${book:-kindle}
+org="$out_dir/$book.org"
+
+mkdir -p "$state_dir" "$out_dir"
+lock="$state_dir/lock"
+if ! mkdir "$lock" 2>/dev/null; then
+  notify "まだ前のページを訳してる"
+  exit 0
+fi
+trap 'rm -rf "$lock" "$state_dir/page.png" "$state_dir/ocr.png"' EXIT INT TERM
+
+grim -g "$geometry" "$state_dir/page.png"
+magick "$state_dir/page.png" -colorspace Gray -resize 200% "$state_dir/ocr.png"
+
+# OCR して、行末ハイフンをつなぎ、行を段落にまとめる。
+# 段落の切れ目:
+#   - 短い行（両端揃えの段落の最終行）のあと
+#   - 空行のうち、直前が文末記号で終わっているもの（tesseract は段落の途中にも空行を入れる）
+#   - 全部大文字の行（戯曲の話者名や見出し）の前後
+# 正規表現の ” ’ は本文の約物（Kindle は曲がった引用符を使う）なので SC1112 は無視する。
+# shellcheck disable=SC1112
+source_text=$(tesseract "$state_dir/ocr.png" - -l eng 2>/dev/null | awk '
+  { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); line[NR] = $0; if (length($0) > max) max = length($0) }
+  function flush() { if (cur != "") { print (printed++ ? "\n" : "") cur }; cur = "" }
+  END {
+    for (i = 1; i <= NR; i++) {
+      l = line[i]
+      if (l == "") { if (cur ~ /[.!?:)"”’…]$/) flush(); continue }
+      if (l ~ /^[A-Z][A-Z0-9 .,'\''’&-]+$/) { flush(); cur = l; flush(); continue }
+      if (cur == "") cur = l
+      else if (cur ~ /[A-Za-z]-$/ && l ~ /^[a-z]/) cur = substr(cur, 1, length(cur) - 1) l
+      else cur = cur " " l
+      if (length(l) < max * 0.8) flush()
+    }
+    flush()
+  }')
+
+if [ -z "$source_text" ]; then
+  notify "文字が読み取れなかった"
+  exit 0
+fi
+
+notify "翻訳中…" 60000
+
+payload=$(jq -n --arg model "$llm_model" --arg text "$source_text" '{
+  model: $model,
+  temperature: 0.2,
+  messages: [
+    {role: "system", content: "You translate pages of an English book into natural, literary Japanese. The text comes from OCR of one screen, so it may start or end in the middle of a sentence and may contain small OCR errors; fix obvious OCR errors silently. Keep the paragraph breaks. Output only the Japanese translation."},
+    {role: "user", content: $text}
+  ]
+}')
+
+if ! translation=$(curl --fail --silent --show-error --connect-timeout 2 --max-time 300 \
+    -H 'Content-Type: application/json' -d "$payload" "$llm_url" |
+    jq -er '.choices[0].message.content'); then
+  notify "翻訳に失敗した（$llm_url）" 10000
+  exit 1
+fi
+
+[ -s "$org" ] || printf '#+title: %s\n' "$book" > "$org"
+{
+  printf '\n* %s\n#+begin_quote\n%s\n#+end_quote\n\n%s\n' \
+    "$(date '+%F %H:%M')" "$source_text" "$translation"
+} >> "$org"
+
+# 表示用の Emacs がなければ開く。開いていれば auto-revert で読み直す。
+# 読み直したら原文の quote ブロックを畳み、いちばん新しい見出しを窓の先頭に置く
+# （末尾に飛ぶと新しい訳の頭が画面の外に出てしまうため）。
+# 位置合わせは revert やウィンドウ表示が終わってから run-at-time 0 で行う。
+viewer_elisp='(progn
+  (setq word-wrap-by-category t)
+  (visual-line-mode 1)
+  (read-only-mode 1)
+  (defun kindle-ja-show-latest (buf)
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (org-hide-block-all)
+        (let ((pos (save-excursion
+                     (goto-char (point-max))
+                     (if (re-search-backward "^\\* " nil t) (point) (point-min)))))
+          (goto-char pos)
+          (dolist (w (get-buffer-window-list buf nil t))
+            (set-window-point w pos)
+            (set-window-start w pos))))))
+  (add-hook (quote after-revert-hook)
+            (lambda () (run-at-time 0 nil (quote kindle-ja-show-latest) (current-buffer)))
+            nil t)
+  (auto-revert-mode 1)
+  (run-at-time 0 nil (quote kindle-ja-show-latest) (current-buffer)))'
+
+if ! hyprctl clients -j | jq -e --arg c "$window_class" 'any(.[]; .class == $c)' >/dev/null; then
+  setsid -f kitty --class "$window_class" -e emacs -nw "$org" --eval "$viewer_elisp" \
+    >/dev/null 2>&1
+fi
+
+notify "訳した → $book.org"
