@@ -128,7 +128,7 @@ kindle-ja --stop         # 読み上げを止める
 | `KINDLE_JA_DIR` | Org ファイルを置くディレクトリ。既定は `~/Documents/kindle-ja` |
 | `KINDLE_JA_OCR` | `tesseract` にすると、OCR サーバーを使わず tesseract で読む。既定は `server` |
 | `KINDLE_JA_OCR_URL` | OCR サーバーの URL。既定は `http://127.0.0.1:8093` |
-| `KINDLE_JA_VOICE` | 読み上げの話者 ID と速さ。`voice` ファイルより優先する |
+| `KINDLE_JA_VOICE` | 読み上げの話者 ID と速さ。`voice` ファイルより優先する。`off` で読み上げない |
 | `KINDLE_JA_VOICEVOX_URL` | VOICEVOX ENGINE の URL。既定は `http://127.0.0.1:50021` |
 | `KINDLE_JA_PLAYER` | 再生に使うコマンド。既定は `pw-play` |
 

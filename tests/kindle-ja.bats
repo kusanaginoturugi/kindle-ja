@@ -217,3 +217,20 @@ EOF
   [ "$status" -eq 0 ]
   if grep -q '^setsid -f kindle-ja-say' "$STUB_LOG"; then false; fi
 }
+
+@test "KINDLE_JA_VOICE=off なら、声の設定があっても読み上げない" {
+  mkdir -p "$XDG_CONFIG_HOME/kindle-ja"
+  echo '3 1.18' > "$XDG_CONFIG_HOME/kindle-ja/voice"
+  export KINDLE_JA_VOICE=off
+  ocr_page
+  run "$script" off
+  [ "$status" -eq 0 ]
+  if grep -q '^setsid -f kindle-ja-say' "$STUB_LOG"; then false; fi
+}
+
+@test "温度 0 で訳させる（PLaMo の訳を毎回同じにする）" {
+  ocr_page
+  run "$script"
+  [ "$status" -eq 0 ]
+  grep -q '"temperature": 0,' "$STUB_LOG.payload"
+}
